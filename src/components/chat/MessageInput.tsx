@@ -11,6 +11,7 @@ import {
   Image as ImageIcon,
   FileText,
   File as FileIcon,
+  ShieldAlert,
 } from "lucide-react";
 import EmojiPicker, { Theme } from "emoji-picker-react";
 import type { EmojiClickData } from "emoji-picker-react";
@@ -45,14 +46,28 @@ const MessageInput: React.FC = () => {
     abortController: null,
   });
 
-  const { activeConversation } = useSelector((state: RootState) => state.chat);
+  const { activeConversation, activeGroup } = useSelector(
+    (state: RootState) => state.chat,
+  );
   const { user } = useSelector((state: RootState) => state.auth);
-  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Determine if this is a group with admin-only messaging
+  const isAdminOnlyGroup =
+    activeConversation?.isGroup && activeGroup?.settings?.onlyAdminCanMessage;
+  const isGroupAdmin =
+    activeGroup &&
+    String(
+      typeof activeGroup.admin === "string"
+        ? activeGroup.admin
+        : activeGroup.admin._id,
+    ) === String(user?._id);
+  const isLocked = isAdminOnlyGroup && !isGroupAdmin;
 
   // Close emoji picker and attach menu when clicking outside
   useEffect(() => {
@@ -82,21 +97,32 @@ const MessageInput: React.FC = () => {
 
   const handleSend = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!activeConversation || !user) return;
+    if (!activeConversation || !user || isLocked) return;
 
     const otherParticipant = getOtherParticipant();
 
     // If there's a file upload completed, send message with file
     if (fileUpload.uploaded && fileUpload.fileUrl) {
-      socketService.emit("send_message", {
-        conversationId: activeConversation._id,
-        content: content.trim() || fileUpload.fileName || "File",
-        receiverId: otherParticipant?._id,
-        messageType: fileUpload.messageType,
-        fileUrl: fileUpload.fileUrl,
-        fileName: fileUpload.fileName,
-        fileSize: fileUpload.file?.size,
-      });
+      if (activeConversation.isGroup) {
+        socketService.emit("send_group_message", {
+          conversationId: activeConversation._id,
+          content: content.trim() || fileUpload.fileName || "File",
+          messageType: fileUpload.messageType,
+          fileUrl: fileUpload.fileUrl,
+          fileName: fileUpload.fileName,
+          fileSize: fileUpload.file?.size,
+        });
+      } else {
+        socketService.emit("send_message", {
+          conversationId: activeConversation._id,
+          content: content.trim() || fileUpload.fileName || "File",
+          receiverId: otherParticipant?._id,
+          messageType: fileUpload.messageType,
+          fileUrl: fileUpload.fileUrl,
+          fileName: fileUpload.fileName,
+          fileSize: fileUpload.file?.size,
+        });
+      }
       resetFileUpload();
       setContent("");
       handleStopTyping();
@@ -106,52 +132,66 @@ const MessageInput: React.FC = () => {
     // Regular text message
     if (!content.trim()) return;
 
-    socketService.emit("send_message", {
-      conversationId: activeConversation._id,
-      content: content.trim(),
-      receiverId: otherParticipant?._id,
-      messageType: "text",
-    });
+    if (activeConversation.isGroup) {
+      socketService.emit("send_group_message", {
+        conversationId: activeConversation._id,
+        content: content.trim(),
+        messageType: "text",
+      });
+    } else {
+      socketService.emit("send_message", {
+        conversationId: activeConversation._id,
+        content: content.trim(),
+        receiverId: otherParticipant?._id,
+        messageType: "text",
+      });
+    }
 
     setContent("");
     handleStopTyping();
   };
 
   const handleTyping = () => {
-    if (!user || !activeConversation) return;
-    const otherParticipant = getOtherParticipant();
-
+    if (!activeConversation) return;
     socketService.emit("typing", {
       conversationId: activeConversation._id,
-      receiverId: otherParticipant?._id,
     });
-
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => {
-      handleStopTyping();
-    }, 3000);
+    typingTimeoutRef.current = setTimeout(handleStopTyping, 2000);
   };
 
   const handleStopTyping = () => {
-    if (!user || !activeConversation) return;
-    const otherParticipant = getOtherParticipant();
-
+    if (!activeConversation) return;
     socketService.emit("stop_typing", {
       conversationId: activeConversation._id,
-      receiverId: otherParticipant?._id,
     });
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
   };
 
-  useEffect(() => {
-    return () => {
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      handleStopTyping();
-    };
-  }, [activeConversation?._id]);
-
   const onEmojiClick = (emojiData: EmojiClickData) => {
-    setContent((prev) => prev + emojiData.emoji);
-    inputRef.current?.focus();
+    const cursor = inputRef.current?.selectionStart ?? content.length;
+    setContent(
+      content.slice(0, cursor) + emojiData.emoji + content.slice(cursor),
+    );
+    setShowEmojiPicker(false);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  };
+
+  const resetFileUpload = () => {
+    setFileUpload({
+      file: null,
+      preview: null,
+      progress: 0,
+      uploading: false,
+      uploaded: false,
+      error: null,
+      fileUrl: null,
+      messageType: null,
+      fileName: null,
+      abortController: null,
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
   const handleFileSelect = async (
@@ -165,12 +205,11 @@ const MessageInput: React.FC = () => {
 
     // Generate preview for images
     let preview: string | null = null;
-    if (type === "image" && file.type.startsWith("image/")) {
+    if (type === "image") {
       preview = URL.createObjectURL(file);
     }
 
     const abortController = new AbortController();
-
     setFileUpload({
       file,
       preview,
@@ -184,7 +223,6 @@ const MessageInput: React.FC = () => {
       abortController,
     });
 
-    // Upload the file
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -209,19 +247,13 @@ const MessageInput: React.FC = () => {
         fileName: response.data.fileName,
       }));
     } catch (err: any) {
-      if (err.name === "CanceledError" || err.code === "ERR_CANCELED") {
-        resetFileUpload();
-      } else {
-        setFileUpload((prev) => ({
-          ...prev,
-          uploading: false,
-          error: "Upload failed. Try again.",
-        }));
-      }
+      if (err.name === "CanceledError" || err.name === "AbortError") return;
+      setFileUpload((prev) => ({
+        ...prev,
+        uploading: false,
+        error: err.response?.data?.message || "Upload failed. Try again.",
+      }));
     }
-
-    // Reset the input so the same file can be selected again
-    e.target.value = "";
   };
 
   const cancelUpload = () => {
@@ -229,24 +261,6 @@ const MessageInput: React.FC = () => {
       fileUpload.abortController.abort();
     }
     resetFileUpload();
-  };
-
-  const resetFileUpload = () => {
-    if (fileUpload.preview) {
-      URL.revokeObjectURL(fileUpload.preview);
-    }
-    setFileUpload({
-      file: null,
-      preview: null,
-      progress: 0,
-      uploading: false,
-      uploaded: false,
-      error: null,
-      fileUrl: null,
-      messageType: null,
-      fileName: null,
-      abortController: null,
-    });
   };
 
   const formatFileSize = (bytes: number) => {
@@ -257,98 +271,80 @@ const MessageInput: React.FC = () => {
 
   if (!activeConversation) return null;
 
+  // === LOCKED: Admin-Only Group ===
+  if (isLocked) {
+    return (
+      <div className="border-t border-gray-200 bg-gray-50 px-6 py-4 flex items-center justify-center space-x-3 text-gray-500">
+        <ShieldAlert size={18} className="text-orange-400 flex-shrink-0" />
+        <p className="text-sm font-medium text-gray-500">
+          Only admins can send messages in this group
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="border-t border-gray-200 bg-white relative">
-      {/* File Upload Preview Bar */}
-      {(fileUpload.file || fileUpload.error) && (
-        <div className="px-4 pt-3 pb-1">
-          <div className="bg-gray-50 border border-gray-200 rounded-2xl p-3 relative overflow-hidden">
-            {/* Progress bar background */}
-            {fileUpload.uploading && (
-              <div
-                className="absolute inset-0 bg-blue-50 transition-all duration-300 ease-out rounded-2xl"
-                style={{ width: `${fileUpload.progress}%` }}
+    <div className="border-t border-gray-200 bg-white px-4 py-3 relative">
+      {/* File Upload Preview */}
+      {fileUpload.file && (
+        <div className="mb-3 p-3 bg-gray-50 border border-gray-200 rounded-xl relative">
+          <button
+            onClick={cancelUpload}
+            className="absolute top-2 right-2 p-1 rounded-full bg-red-100 text-red-500 hover:bg-red-200 transition z-10"
+          >
+            <X size={14} />
+          </button>
+
+          <div className="flex items-center space-x-3">
+            {/* Preview */}
+            {fileUpload.preview ? (
+              <img
+                src={fileUpload.preview}
+                alt="Preview"
+                className="w-14 h-14 rounded-lg object-cover flex-shrink-0"
               />
-            )}
-            {/* Uploaded success background */}
-            {fileUpload.uploaded && (
-              <div className="absolute inset-0 bg-green-50 rounded-2xl" />
-            )}
-            {/* Error background */}
-            {fileUpload.error && (
-              <div className="absolute inset-0 bg-red-50 rounded-2xl" />
-            )}
-
-            <div className="relative flex items-center space-x-3">
-              {/* File Preview */}
-              <div className="flex-shrink-0">
-                {fileUpload.preview ? (
-                  <div className="w-14 h-14 rounded-xl overflow-hidden border border-gray-200 shadow-sm">
-                    <img
-                      src={fileUpload.preview}
-                      alt="Preview"
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                ) : (
-                  <div className="w-14 h-14 rounded-xl bg-blue-100 flex items-center justify-center border border-blue-200">
-                    <FileIcon className="w-7 h-7 text-blue-600" />
-                  </div>
-                )}
+            ) : (
+              <div className="w-14 h-14 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
+                <FileIcon size={24} className="text-blue-600" />
               </div>
+            )}
 
-              {/* File Info */}
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-gray-800 truncate">
-                  {fileUpload.fileName}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-gray-800 truncate">
+                {fileUpload.fileName}
+              </p>
+              {fileUpload.file && (
+                <p className="text-xs text-gray-400">
+                  {formatFileSize(fileUpload.file.size)}
                 </p>
-                <div className="flex items-center space-x-2 mt-0.5">
-                  {fileUpload.file && (
-                    <span className="text-xs text-gray-500">
-                      {formatFileSize(fileUpload.file.size)}
-                    </span>
-                  )}
-                  {fileUpload.uploading && (
-                    <span className="text-xs text-blue-600 font-medium">
-                      Uploading {fileUpload.progress}%
-                    </span>
-                  )}
-                  {fileUpload.uploaded && (
-                    <span className="text-xs text-green-600 font-medium">
-                      ✓ Ready to send
-                    </span>
-                  )}
-                  {fileUpload.error && (
-                    <span className="text-xs text-red-500 font-medium">
-                      {fileUpload.error}
-                    </span>
-                  )}
-                </div>
+              )}
 
-                {/* Progress Bar */}
-                {fileUpload.uploading && (
-                  <div className="mt-2 w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+              {/* Progress Bar */}
+              {fileUpload.uploading && (
+                <div className="mt-2">
+                  <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
                     <div
-                      className="h-full rounded-full transition-all duration-300 ease-out"
-                      style={{
-                        width: `${fileUpload.progress}%`,
-                        background:
-                          "linear-gradient(90deg, #3b82f6, #2563eb, #1d4ed8)",
-                      }}
+                      className="h-full bg-gradient-to-r from-blue-500 to-blue-600 rounded-full transition-all duration-300"
+                      style={{ width: `${fileUpload.progress}%` }}
                     />
                   </div>
-                )}
-              </div>
+                  <p className="text-xs text-blue-600 mt-1 font-medium">
+                    Uploading {fileUpload.progress}%
+                  </p>
+                </div>
+              )}
 
-              {/* Cancel / Remove Button */}
-              <button
-                type="button"
-                onClick={fileUpload.uploading ? cancelUpload : resetFileUpload}
-                className="flex-shrink-0 w-8 h-8 rounded-full bg-white border border-gray-300 flex items-center justify-center hover:bg-red-50 hover:border-red-300 hover:text-red-500 transition text-gray-500 shadow-sm"
-                title={fileUpload.uploading ? "Cancel upload" : "Remove file"}
-              >
-                <X size={16} />
-              </button>
+              {/* Ready */}
+              {fileUpload.uploaded && (
+                <p className="text-xs text-green-600 mt-1 font-semibold">
+                  ✓ Ready to send
+                </p>
+              )}
+
+              {/* Error */}
+              {fileUpload.error && (
+                <p className="text-xs text-red-500 mt-1">{fileUpload.error}</p>
+              )}
             </div>
           </div>
         </div>
@@ -358,56 +354,45 @@ const MessageInput: React.FC = () => {
       {showEmojiPicker && (
         <div
           ref={emojiPickerRef}
-          className="absolute bottom-full left-4 mb-2 z-50"
-          style={{ filter: "drop-shadow(0 4px 20px rgba(0,0,0,0.15))" }}
+          className="absolute bottom-full left-4 mb-2 z-50 shadow-2xl rounded-2xl overflow-hidden"
         >
           <EmojiPicker
             onEmojiClick={onEmojiClick}
             theme={Theme.LIGHT}
+            height={380}
             width={320}
-            height={400}
-            searchPlaceholder="Search emoji..."
-            lazyLoadEmojis={true}
+            searchDisabled={false}
+            lazyLoadEmojis
           />
         </div>
       )}
 
-      {/* Attachment Menu */}
+      {/* Attach Menu */}
       {showAttachMenu && (
         <div
           ref={attachMenuRef}
-          className="absolute bottom-full left-4 mb-2 z-50"
+          className="absolute bottom-full left-14 mb-2 z-50 bg-white rounded-2xl shadow-2xl border border-gray-100 overflow-hidden"
         >
-          <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-2 min-w-[180px]">
-            <button
-              type="button"
-              onClick={() => imageInputRef.current?.click()}
-              className="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-blue-50 transition text-left group"
-            >
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-sm group-hover:shadow-md transition">
-                <ImageIcon size={20} className="text-white" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-gray-800">Photo</p>
-                <p className="text-[11px] text-gray-400">PNG, JPG, GIF, WEBP</p>
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="w-full flex items-center space-x-3 px-4 py-3 rounded-xl hover:bg-blue-50 transition text-left group"
-            >
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center shadow-sm group-hover:shadow-md transition">
-                <FileText size={20} className="text-white" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-gray-800">Document</p>
-                <p className="text-[11px] text-gray-400">
-                  PDF, DOC, XLS, ZIP...
-                </p>
-              </div>
-            </button>
-          </div>
+          <button
+            onClick={() => imageInputRef.current?.click()}
+            className="w-full flex items-center space-x-3 px-5 py-3 hover:bg-blue-50 transition"
+          >
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-pink-400 to-orange-400 flex items-center justify-center">
+              <ImageIcon size={18} className="text-white" />
+            </div>
+            <span className="text-sm font-semibold text-gray-700">Photo</span>
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full flex items-center space-x-3 px-5 py-3 hover:bg-blue-50 transition"
+          >
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center">
+              <FileText size={18} className="text-white" />
+            </div>
+            <span className="text-sm font-semibold text-gray-700">
+              Document
+            </span>
+          </button>
         </div>
       )}
 
@@ -415,83 +400,82 @@ const MessageInput: React.FC = () => {
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/jpeg,image/png,image/gif,image/webp,image/svg+xml"
+        accept="image/*"
         className="hidden"
         onChange={(e) => handleFileSelect(e, "image")}
       />
       <input
         ref={fileInputRef}
         type="file"
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.txt,.csv,.mp3,.wav,.mp4,.webm"
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.zip,.rar,.txt,.csv,audio/*,video/*"
         className="hidden"
         onChange={(e) => handleFileSelect(e, "file")}
       />
 
-      {/* Main Input Area */}
-      <form
-        onSubmit={handleSend}
-        className="p-4 flex items-center space-x-3 max-w-5xl mx-auto"
-      >
-        <div className="flex space-x-1">
-          <button
-            type="button"
-            onClick={() => {
-              setShowAttachMenu(!showAttachMenu);
-              setShowEmojiPicker(false);
-            }}
-            className={`p-2.5 rounded-xl transition ${
-              showAttachMenu
-                ? "bg-blue-100 text-blue-600"
-                : "text-gray-400 hover:text-blue-600 hover:bg-gray-100"
-            }`}
-          >
-            <Paperclip size={22} />
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setShowEmojiPicker(!showEmojiPicker);
-              setShowAttachMenu(false);
-            }}
-            className={`p-2.5 rounded-xl transition ${
-              showEmojiPicker
-                ? "bg-blue-100 text-blue-600"
-                : "text-gray-400 hover:text-blue-600 hover:bg-gray-100"
-            }`}
-          >
-            <Smile size={22} />
-          </button>
-        </div>
+      {/* Main Input Row */}
+      <form onSubmit={handleSend} className="flex items-center space-x-2">
+        {/* Emoji Button */}
+        <button
+          type="button"
+          onClick={() => setShowEmojiPicker((v) => !v)}
+          className={`p-2.5 rounded-xl transition flex-shrink-0 ${
+            showEmojiPicker
+              ? "bg-yellow-100 text-yellow-500"
+              : "text-gray-400 hover:text-yellow-500 hover:bg-yellow-50"
+          }`}
+        >
+          <Smile size={22} />
+        </button>
 
-        <div className="flex-1 relative">
-          <input
-            ref={inputRef}
-            type="text"
-            value={content}
-            onChange={(e) => {
-              setContent(e.target.value);
-              handleTyping();
-            }}
-            placeholder={
-              fileUpload.uploaded
-                ? "Add a caption (optional)..."
-                : "Type your message..."
+        {/* Attach Button */}
+        <button
+          type="button"
+          onClick={() => setShowAttachMenu((v) => !v)}
+          disabled={fileUpload.uploading}
+          className={`p-2.5 rounded-xl transition flex-shrink-0 ${
+            showAttachMenu
+              ? "bg-blue-100 text-blue-600"
+              : "text-gray-400 hover:text-blue-500 hover:bg-blue-50"
+          } disabled:opacity-40`}
+        >
+          <Paperclip size={22} />
+        </button>
+
+        {/* Text Input */}
+        <input
+          ref={inputRef}
+          type="text"
+          value={content}
+          onChange={(e) => {
+            setContent(e.target.value);
+            handleTyping();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
             }
-            onBlur={handleStopTyping}
-            className="w-full px-5 py-3 bg-gray-100 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none transition pr-12"
-          />
-          <button
-            type="submit"
-            disabled={!content.trim() && !fileUpload.uploaded}
-            className={`absolute right-2 top-1/2 transform -translate-y-1/2 p-2 rounded-xl transition ${
-              content.trim() || fileUpload.uploaded
-                ? "bg-blue-600 text-white shadow-md hover:bg-blue-700"
-                : "text-gray-300"
-            }`}
-          >
-            <Send size={20} />
-          </button>
-        </div>
+          }}
+          placeholder={
+            fileUpload.uploaded
+              ? "Add a caption (optional)..."
+              : activeConversation.isGroup
+                ? `Message ${activeConversation.groupData?.name || activeConversation.groupName || "Group"}...`
+                : "Type a message..."
+          }
+          className="flex-1 px-4 py-2.5 bg-gray-100 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition text-sm"
+        />
+
+        {/* Send Button */}
+        <button
+          type="submit"
+          disabled={
+            (!content.trim() && !fileUpload.uploaded) || fileUpload.uploading
+          }
+          className="p-2.5 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+        >
+          <Send size={20} />
+        </button>
       </form>
     </div>
   );
