@@ -11,6 +11,7 @@ interface ChatState {
   isSidebarOpen: boolean;
   typingUsers: { [convId: string]: string[] };
   unreadCounts: { [convId: string]: number };
+  replyingTo: Message | null;
 }
 
 const initialState: ChatState = {
@@ -23,6 +24,7 @@ const initialState: ChatState = {
   isSidebarOpen: true,
   typingUsers: {},
   unreadCounts: {},
+  replyingTo: null,
 };
 
 const chatSlice = createSlice({
@@ -168,7 +170,13 @@ const chatSlice = createSlice({
     },
     setSidebarOpen: (state, action: PayloadAction<boolean>) => {
       state.isSidebarOpen = action.payload;
-    }
+    },
+    setReplyingTo: (state, action: PayloadAction<Message | null>) => {
+      state.replyingTo = action.payload;
+    },
+    clearReplyingTo: (state) => {
+      state.replyingTo = null;
+    },
   },
 });
 
@@ -176,5 +184,6 @@ export const {
   setConversations, setActiveConversation, setMessages, setUsers, addMessage,
   setTyping, updateOnlineStatus, updateMessageStatus, toggleSidebar, setSidebarOpen,
   setGroups, setActiveGroup, addGroup, updateGroup,
+  setReplyingTo, clearReplyingTo,
 } = chatSlice.actions;
 export default chatSlice.reducer;

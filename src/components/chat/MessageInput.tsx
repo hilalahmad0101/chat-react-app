@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { useSelector } from "react-redux";
+import { useSelector, useDispatch } from "react-redux";
 import type { RootState } from "../../store";
+import { clearReplyingTo } from "../../store/slices/chatSlice";
 import { socketService } from "../../utils/socket";
 import apiClient from "../../api/client";
 import {
@@ -12,9 +13,11 @@ import {
   FileText,
   File as FileIcon,
   ShieldAlert,
+  Reply,
 } from "lucide-react";
 import EmojiPicker, { Theme } from "emoji-picker-react";
 import type { EmojiClickData } from "emoji-picker-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 interface FileUploadState {
   file: File | null;
@@ -46,7 +49,8 @@ const MessageInput: React.FC = () => {
     abortController: null,
   });
 
-  const { activeConversation, activeGroup } = useSelector(
+  const dispatch = useDispatch();
+  const { activeConversation, activeGroup, replyingTo } = useSelector(
     (state: RootState) => state.chat,
   );
   const { user } = useSelector((state: RootState) => state.auth);
@@ -111,6 +115,7 @@ const MessageInput: React.FC = () => {
           fileUrl: fileUpload.fileUrl,
           fileName: fileUpload.fileName,
           fileSize: fileUpload.file?.size,
+          parentMessageId: replyingTo?._id,
         });
       } else {
         socketService.emit("send_message", {
@@ -121,8 +126,10 @@ const MessageInput: React.FC = () => {
           fileUrl: fileUpload.fileUrl,
           fileName: fileUpload.fileName,
           fileSize: fileUpload.file?.size,
+          parentMessageId: replyingTo?._id,
         });
       }
+      dispatch(clearReplyingTo());
       resetFileUpload();
       setContent("");
       handleStopTyping();
@@ -137,6 +144,7 @@ const MessageInput: React.FC = () => {
         conversationId: activeConversation._id,
         content: content.trim(),
         messageType: "text",
+        parentMessageId: replyingTo?._id,
       });
     } else {
       socketService.emit("send_message", {
@@ -144,9 +152,11 @@ const MessageInput: React.FC = () => {
         content: content.trim(),
         receiverId: otherParticipant?._id,
         messageType: "text",
+        parentMessageId: replyingTo?._id,
       });
     }
 
+    dispatch(clearReplyingTo());
     setContent("");
     handleStopTyping();
   };
@@ -411,6 +421,45 @@ const MessageInput: React.FC = () => {
         className="hidden"
         onChange={(e) => handleFileSelect(e, "file")}
       />
+
+      {/* Reply Preview Bar */}
+      <AnimatePresence>
+        {replyingTo && (
+          <motion.div
+            initial={{ opacity: 0, y: 10, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: 10, height: 0 }}
+            className="absolute bottom-full left-0 right-0 mx-2 mb-2 bg-white rounded-2xl shadow-xl border border-blue-100 overflow-hidden z-40"
+          >
+            <div className="flex items-center p-3 border-l-4 border-blue-500">
+              <div className="flex-1 min-w-0 mr-3">
+                <div className="flex items-center space-x-2 mb-0.5">
+                  <Reply size={12} className="text-blue-600" />
+                  <span className="text-xs font-bold text-blue-600">
+                    Replying to{" "}
+                    {typeof replyingTo.senderId === "string"
+                      ? "User"
+                      : (replyingTo.senderId as any)?.username}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-500 truncate">
+                  {replyingTo.messageType === "image"
+                    ? "📷 Photo"
+                    : replyingTo.messageType === "file"
+                      ? `📎 ${replyingTo.fileName || "File"}`
+                      : replyingTo.content}
+                </p>
+              </div>
+              <button
+                onClick={() => dispatch(clearReplyingTo())}
+                className="p-1.5 rounded-lg hover:bg-gray-100 transition text-gray-400"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Main Input Row */}
       <form onSubmit={handleSend} className="flex items-center space-x-2">

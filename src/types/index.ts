@@ -17,6 +17,8 @@ export interface Message {
   fileName?: string;
   fileSize?: number;
   status: 'sent' | 'delivered' | 'seen';
+  parentMessageId?: string | Message;   // populated reply-to
+  isForwarded?: boolean;
   createdAt: string;
 }
 
