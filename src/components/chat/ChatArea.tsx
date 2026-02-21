@@ -16,6 +16,8 @@ import {
   Check,
   CheckCheck,
   MessageSquare,
+  FileText,
+  Download,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { socketService } from "../../utils/socket";
@@ -198,7 +200,95 @@ const ChatArea: React.FC = () => {
                       {senderName}
                     </p>
                   )}
-                  <p className="text-sm leading-relaxed">{msg.content}</p>
+
+                  {/* Image Message */}
+                  {msg.messageType === "image" && msg.fileUrl && (
+                    <div className="mb-2 -mx-1 -mt-1">
+                      <img
+                        src={`${import.meta.env.VITE_API_URL?.replace("/api", "")}${msg.fileUrl}`}
+                        alt={msg.content || "Image"}
+                        className="rounded-xl max-w-full max-h-64 object-cover cursor-pointer hover:opacity-90 transition bg-gray-200"
+                        loading="lazy"
+                        onClick={() =>
+                          window.open(
+                            `${import.meta.env.VITE_API_URL?.replace("/api", "")}${msg.fileUrl}`,
+                            "_blank",
+                          )
+                        }
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.style.display = "none";
+                          const fallback = document.createElement("div");
+                          fallback.className =
+                            "w-full h-32 bg-gray-200 rounded-xl flex items-center justify-center text-gray-500 text-xs";
+                          fallback.textContent = "Image failed to load";
+                          target.parentNode?.appendChild(fallback);
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {/* File Message */}
+                  {msg.messageType === "file" && msg.fileUrl && (
+                    <a
+                      href={`${import.meta.env.VITE_API_URL?.replace("/api", "")}${msg.fileUrl}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`flex items-center space-x-3 p-2.5 rounded-xl mb-2 transition ${
+                        isMe
+                          ? "bg-blue-500/30 hover:bg-blue-500/40"
+                          : "bg-gray-100 hover:bg-gray-200"
+                      }`}
+                    >
+                      <div
+                        className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                          isMe ? "bg-blue-400/40" : "bg-blue-100"
+                        }`}
+                      >
+                        <FileText
+                          size={20}
+                          className={isMe ? "text-white" : "text-blue-600"}
+                        />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p
+                          className={`text-xs font-semibold truncate ${
+                            isMe ? "text-white" : "text-gray-800"
+                          }`}
+                        >
+                          {msg.content || "File"}
+                        </p>
+                        {msg.fileSize && (
+                          <p
+                            className={`text-[10px] ${
+                              isMe ? "text-blue-200" : "text-gray-400"
+                            }`}
+                          >
+                            {msg.fileSize < 1024 * 1024
+                              ? `${(msg.fileSize / 1024).toFixed(1)} KB`
+                              : `${(msg.fileSize / (1024 * 1024)).toFixed(1)} MB`}
+                          </p>
+                        )}
+                      </div>
+                      <Download
+                        size={16}
+                        className={`flex-shrink-0 ${
+                          isMe ? "text-white" : "text-gray-500"
+                        }`}
+                      />
+                    </a>
+                  )}
+
+                  {/* Text content (or caption for media) */}
+                  {msg.messageType === "text" && (
+                    <p className="text-sm leading-relaxed">{msg.content}</p>
+                  )}
+                  {msg.messageType === "image" && msg.content && (
+                    <p className="text-sm leading-relaxed mt-1">
+                      {msg.content}
+                    </p>
+                  )}
+
                   <div
                     className={`text-[10px] mt-1 flex items-center ${isMe ? "text-blue-100" : "text-gray-400"}`}
                   >

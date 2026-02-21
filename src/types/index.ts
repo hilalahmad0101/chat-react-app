@@ -13,6 +13,9 @@ export interface Message {
   senderId: string | User;
   content: string;
   messageType: 'text' | 'image' | 'file';
+  fileUrl?: string;
+  fileName?: string;
+  fileSize?: number;
   status: 'sent' | 'delivered' | 'seen';
   createdAt: string;
 }
